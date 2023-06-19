@@ -1,0 +1,229 @@
+// Using this settings.gradle file assumes that
+// there is an init script providing repositories
+buildscript {
+        gradle.injectRepositories(repositories, configurations)
+        dependencies {
+                classpath 'com.intershop:deployment-bootstrap:2.11.4'
+        }
+}
+
+
+// tell Gradle to run the deployment and configure parameters
+apply plugin: com.intershop.deploy.bootstrap.DeploymentBootstrapPlugin
+
+deploymentBootstrap {
+	gradle.injectRepositories(repositoryHandler, configurationContainer)
+// ######### CONFIGURATION FOR JENKINS DEPLOYMENT ######
+        def ASSEMBLY = System.getenv("ASSEMBLY")
+        if(ASSEMBLY != null) {
+                println "ASSEMBLY to deploy: $ASSEMBLY"
+        } else {
+                println "No ASSEMBLY version supplied. Latest assembly   will be used."
+                ASSEMBLY="+"
+        }
+	assembly ("com.eperium.assembly:plus:$ASSEMBLY") {
+		
+		/*
+		 * Define the type of your deployment. According to hostType and environment the contained cartridges
+		 * and local component vary.
+		 * The host types are defined in your assembly (e.g. 'webserver', 'appserver', 'share', 'all')
+		 * The environments are defined in your assembly (e.g. 'development', 'test', 'production')
+		 *
+		 * hostType = 'webserver' | 'appserver' | 'share' | 'all' | 'javadoc'
+		 * environment = 'development' | 'test' | 'production'
+		 *
+		 * hostType {
+		 *     hostType 'all'
+		 *     environment 'production'
+		 * }
+		 */
+		hostType {
+			hostType 'share'
+			environment 'prelive'
+		}
+	}
+	
+	// Configure the deployment
+	config {
+		/*
+		 * Adjust the default settings, if necessary. The default configuration is recommended.
+		 * IS_SHARE may not a subfolder of IS_HOME
+		 * The settingsDir may not in IS_HOME
+		 */
+		target {
+			/*
+			 * Configure the platform we are on.
+			 *
+			 * platform = 'linux.rhel.x86_64' | 'linux.sles.x86_64' | 'win.x86_64'
+			 */
+			platform = 'linux.rhel.x86_64'
+			// Id of the instance has to be a number for now
+			instanceId = '1'
+			// IS_SHARE should be located in the 'share' subdirectory of this script's directory
+			shareDirectory = new File('/opt/intershop/eserver1/share')
+			// IS_HOME should be located in the 'local' subdirectory of this script's directory
+			localDirectory = new File('/opt/intershop/eserver1/local')
+		 
+        }	
+		assemblyDeployment {
+			// Name of user and group that should own the deployed files
+			// (needed on windows and linux)
+			// The deployment can only be run by the specified user
+			user = 'intershop1'
+			userGroup = 'isgrp1'
+			/*
+			 * Configure undeployment.
+			 * purgeUnknownFiles = true | false
+			 *
+			 * true: Clean all
+			 * false: Keep files produced outside the deployment (e.g. log files) in file system.
+			 */
+			purgeUnknownFiles = true
+			modificationPriorities = ['default', 'intershop', 'development']
+		}
+
+		// Configure the location of your license.
+		// The license file must be available
+		license {
+			licenseFile = new File('/opt/intershop/eserver1/share/system/license/license.xml')
+		}
+
+		webadapter {
+			sharedMemoryKey = '0x2001'
+			port = 80
+			securePort = 443
+			hostname = 'newaccplus.salnl.net'
+			useSSLBox         = true
+            sslBoxSecuredPort = 81
+		}
+
+        solr {
+        	server 'http://solr-1963891790.eu-west-1.elb.amazonaws.com'
+            contextPath '/solr'
+            clusterNodes 'http://pls-solr-p02:10052,http://pls-solr-p03:10052'
+         }
+		
+		// Database connection parameters this is update on orm.properties
+		database {
+			host = 'pls-from-dms-snapshot-20200728-wdm-acc.c1xdvebu8nk2.eu-west-1.rds.amazonaws.com'
+			port = 1521
+			sid = 'ISHOP'
+			tnsAlias = 'ISSERVER.world'
+			user = 'intershop'
+			password = 'ojvheeeq35rghjwoenfjdvbhifr'
+			oracleClientDir = new File('/opt/oracle/product/12.1.0/dbclient_1/')
+		}
+
+		if (target.includeShare) {
+			project(':plus_app_sf_webshop') {
+				afterEvaluate {
+					def environment = project.deploymentBootstrap.hostType.environment.name
+					if(environment == 'prelive'){
+						deployment.files.share {
+                    	exclude 'system/config/cluster/test.properties'
+                    	exclude 'system/config/cluster/production.properties'
+                		}
+					}
+				}
+			}
+			project(':bc_urlrewriting') {
+				 afterEvaluate {
+					def environment = project.deploymentBootstrap.hostType.environment.name
+					if(environment == 'prelive'){
+						deployment.files.share {
+                    	exclude 'system/config/cluster/development.urlrewrite.properties'
+                    	exclude 'system/config/cluster/test.urlrewrite.properties'
+                    	exclude 'system/config/cluster/production.urlrewrite.properties'
+                		}
+					}
+				 }
+			 }
+		}
+
+		// Deployment additions
+		deployment {
+			modification {
+        		keep('modifiedFiles') {
+           			priority 'intershop'
+            		dir  target.shareDirectory
+                    include 'system/config/cluster/migration.properties'
+                    include 'system/config/cluster/logback-main.xml'
+           		}
+			}		
+			filters {
+				overrideProperties('xforward') {
+                	dir = target.shareDirectory
+                    include 'system/config/cluster/webadapter.properties'
+                    properties['request.remoteAddrHeader'] = 'X-Forwarded-For'
+                }
+
+				overrideProperties('crypto'){
+                	dir = target.shareDirectory
+                  		include 'system/config/cluster/encryption.properties'
+                   		properties['eperium.crypto.keystore.default']='crypto.keystore'
+                   		properties['eperium.crypto.storepass.default']='topsecret'
+                   		properties['eperium.crypto.storetype.default']='JKS'
+                    	properties['eperium.crypto.algorithm.default']='RSA'
+                   		properties['eperium.crypto.sign.default']='SHA1WithRSA'
+						properties['intershop.encryption.keystore.file']='${IS_SHARE}/system/config/cluster/intershop.keystore'
+						properties['intershop.encryption.random.file']='${IS_SHARE}/system/config/cluster/random'
+			    }
+				overrideProperties('japp'){
+					dir = target.shareDirectory
+						include 'system/config/cluster/appserver.properties'
+						properties['intershop.event.messengerClass']='com.intershop.beehive.messaging.internal.jgroups.JGroupsMessenger'
+						properties['intershop.event.jgroupsChannelName']='eventChannel'
+						properties['intershop.event.jgroupsProtocolStackConfigFile']='${IS_SHARE}/system/config/cluster/jgroups_protocolstack_TCP_File_Ping.xml'
+						properties['intershop.event.jgroupsRequestTimeout']='1000'
+						properties['intershop.event.jgroupsAcknowledge']='false'
+						properties['intershop.event.jgroupsSyncAcknowledge']='false'
+				}
+
+				overrideProperties('jorm'){
+					dir = target.shareDirectory
+						include 'system/config/cluster/orm.properties'
+						properties['intershop.cacheSync.messengerClass']='com.intershop.beehive.messaging.internal.jgroups.JGroupsMessenger'
+						properties['intershop.cacheSync.jgroupsChannelName']='cacheSyncChannel'
+						properties['intershop.cacheSync.jgroupsProtocolStackConfigFile']='${IS_SHARE}/system/config/cluster/jgroups_protocolstack_TCP_File_Ping.xml'
+						properties['intershop.cacheSync.jgroupsRequestTimeout']='1000'
+						properties['intershop.cacheSync.jgroupsAcknowledge']='false'
+						properties['intershop.cacheSync.jgroupsSyncAcknowledge']='false'
+				}
+
+				overrideProperties('jcache'){
+					dir = target.shareDirectory
+						include 'system/config/cluster/cache.properties'
+						properties['intershop.cacheengine.wrapped.messengerClass']='com.intershop.beehive.messaging.internal.jgroups.JGroupsMessenger'
+						properties['intershop.cacheengine.wrapped.jgroupsChannelName']='CacheEngineChannel'
+						properties['intershop.cacheengine.wrapped.jgroupsProtocolStackConfigFile']='${IS_SHARE}/system/config/cluster/jgroups_protocolstack_TCP_File_Ping.xml'
+						properties['intershop.cacheengine.wrapped.jgroupsRequestTimeout']='1000'
+						properties['intershop.cacheengine.wrapped.jgroupsAcknowledge']='false'
+						properties['intershop.cacheengine.wrapped.jgroupsSyncAcknowledge']='false'
+				}
+
+				overrideProperties('jtcm'){
+					dir = target.shareDirectory
+						include 'system/tcm/config/tcm.properties'
+						properties['intershop.tcm.event.messengerClass']='com.intershop.beehive.messaging.internal.jgroups.JGroupsMessenger'
+						properties['intershop.tcm.event.jgroupsChannelName']='tcmChannel'
+						properties['intershop.tcm.event.jgroupsProtocolStackConfigFile']='${IS_SHARE}/system/config/cluster/jgroups_protocolstack_TCP_File_Ping.xml'
+						properties['intershop.tcm.event.jgroupsRequestTimeout']='1000'
+						properties['intershop.tcm.event.jgroupsAcknowledge']='false'
+						properties['intershop.tcm.event.jgroupsSyncAcknowledge']='false'
+				}
+				
+			}
+
+			files {
+                pluslogstash {
+                    from new File(settingsDir, 'logback-logstash.xml')
+                    into new File(target.shareDirectory, 'system/config/cluster/')
+                }
+				plusKeyStore {
+                    from new File(settingsDir,'crypto.keystore')
+                    into new File(target.shareDirectory, 'system/config/cluster/')
+                }
+            }
+		}
+	}
+}

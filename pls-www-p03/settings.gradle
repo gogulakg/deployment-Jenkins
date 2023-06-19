@@ -1,0 +1,169 @@
+// Using this settings.gradle file assumes that
+// there is an init script providing repositories
+
+buildscript {
+        gradle.injectRepositories(repositories, configurations)
+        dependencies {
+                classpath 'com.intershop:deployment-bootstrap:2.11.4'
+        }
+}
+
+// tell Gradle to run the deployment and configure parameters
+apply plugin: com.intershop.deploy.bootstrap.DeploymentBootstrapPlugin
+
+deploymentBootstrap {
+	gradle.injectRepositories(repositoryHandler, configurationContainer)
+// ######### CONFIGURATION FOR JENKINS DEPLOYMENT ######
+        def ASSEMBLY = System.getenv("ASSEMBLY")
+        if(ASSEMBLY != null) {
+                println "ASSEMBLY to deploy: $ASSEMBLY"
+        } 	
+			else {
+                println "No ASSEMBLY version supplied. Latest assembly   will be used."
+                ASSEMBLY="+"
+        	}
+
+	assembly ("com.eperium.assembly:plus:$ASSEMBLY") {
+
+	/*
+		 * Define the type of your deployment. According to hostType and environment the contained cartridges
+		 * and local component vary.
+		 * The host types are defined in your assembly (e.g. 'webserver', 'appserver', 'share', 'all')
+		 * The environments are defined in your assembly (e.g. 'development', 'test', 'production')
+		 *
+		 * hostType = 'webserver' | 'appserver' | 'share' | 'all' | 'javadoc'
+		 * environment = 'development' | 'test' | 'production'
+		 *
+		 * hostType {
+		 *     hostType 'all'
+		 *     environment 'production'
+		 * }
+		 */
+		hostType {
+			hostType 'webserver'
+			environment 'prelive'
+		}
+	}
+	
+	// Configure the deployment
+	config {
+		/*
+		 * Adjust the default settings, if necessary. The default configuration is recommended.
+		 * IS_SHARE may not a subfolder of IS_HOME
+		 * The settingsDir may not in IS_HOME
+		 */
+		target {
+			/*
+			 * Configure the platform we are on.
+			 *
+			 * platform = 'linux.rhel.x86_64' | 'linux.sles.x86_64' | 'win.x86_64'
+			 */
+			platform = 'linux.rhel.x86_64'
+			
+			// Id of the instance has to be a number for now
+			instanceId = '1'
+			
+			// IS_SHARE should be located in the 'share' subdirectory of this script's directory
+			shareDirectory = new File('/opt/intershop/eserver1/share')
+			
+			
+			// IS_HOME should be located in the 'local' subdirectory of this script's directory
+			localDirectory = new File('/opt/intershop/eserver1/local')
+		}
+		
+		assemblyDeployment {
+			// Name of user and group that should own the deployed files
+			// (needed on windows and linux)
+			// The deployment can only be run by the specified user
+			user = 'intershop1'
+			userGroup = 'isgrp1'
+			/*
+			 * Configure undeployment.
+			 * purgeUnknownFiles = true | false
+			 *
+			 * true: Clean all
+			 * false: Keep files produced outside the deployment (e.g. log files) in file system.
+			 */
+			purgeUnknownFiles = true
+			modificationPriorities = ['default', 'intershop', 'development']
+		}
+		
+		/*
+		 * Declare some appserver instances.
+		 *
+		 * Add a new instance by adding a new block:
+		 * appserver[n] {
+		 *     tomcatShutdownPort = <PORT1>
+		 *     tomcatHttpPort = <PORT2>
+		 *     tomcatHttpsPort = <PORT3>
+		 *     appserverPort = <PORT4>
+		 * }
+		 * Please use a sequence starting with zero as suffix:
+		 * appserver0, appserver1, appserver2, ...
+		 */
+
+		// Configure the location of your license.
+		// The license file must be available
+		license {
+			licenseFile = new File('/opt/intershop/license/license.xml')
+		}
+				
+		webadapter {
+			port = 80
+			securePort = 443
+			hostname = 'newaccplus.salnl.net'
+			sharedMemoryKey = '0x2001'
+			configurationServices = ['pls-aps-p02:10054','pls-aps-p03:10054']
+			useSSLBox         = true
+            sslBoxSecuredPort = 81
+		}
+
+		if(findProject(':3rd_apache')){
+			project(':3rd_apache') {
+				def configClosure = {
+					deployment.files.local { 
+						exclude 'httpd/conf/extra/httpd-deflate.conf'
+						exclude 'httpd/conf/extra/httpd-ssl.conf'
+					}
+				}
+				if (project.state.executed) {
+          				 configClosure()
+        		}
+				else {
+            				afterEvaluate(configClosure)
+        		}	
+			}
+		}
+
+		deployment {
+			modification {
+        		keep('modifiedFiles') {
+				priority 'intershop'
+				dir target.localDirectory
+				include 'httpd/conf/httpd.conf'
+				}
+			}
+
+			filters {
+                fullContent ('appendHTTPDConfInclude') {
+                    dir = target.localDirectory
+                    include 'webadapter/httpd-webadapter.conf'
+                    action { StringBuilder content ->
+                	    content.append(System.lineSeparator + '# Plus custom configuration' + System.lineSeparator + "Include ${target.localDirectory}/etc/httpd/extra/httpd-plus.conf")
+                        content.append(System.lineSeparator + "Include ${target.localDirectory}/etc/httpd/extra/httpd-redirects.conf")
+                    }
+                }
+			}
+
+			files {
+				plusApacheConf {
+					from new File(settingsDir, 'httpd-plus.conf')
+					from new File(settingsDir, 'httpd-redirects.conf')
+					from new File(settingsDir, 'httpd-deflate.conf')
+					from new File(settingsDir, 'httpd-ssl.conf')
+					into new File(target.localDirectory, 'httpd/conf/extra/')
+				}
+			}
+		}
+	}
+}	

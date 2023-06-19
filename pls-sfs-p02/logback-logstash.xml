@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<included>
+	<appender name="Logstash" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+		<filter class="ch.qos.logback.classic.filter.LevelFilter">
+			<level>ERROR</level>
+			<OnMatch>NEUTRAL</OnMatch>
+			<OnMismatch>DENY</OnMismatch>
+		</filter>
+		<destination>pls-kibana-l03:5045</destination>
+		<encoder class="net.logstash.logback.encoder.LogstashEncoder" />
+		<keepAliveDuration>3 minutes</keepAliveDuration>
+	</appender>
+	<root>
+		<appender-ref ref="Logstash" />
+	</root>
+</included>
